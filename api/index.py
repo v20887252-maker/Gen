@@ -1,109 +1,47 @@
-# ═══════════════════════════════════════════════════════════════
-#  ARIYAN API — FREE FIRE BD ACCOUNT GENERATOR (OB55)
-#  Vercel Native Handler
-# ═══════════════════════════════════════════════════════════════
-
-import json, random, string, hmac, hashlib, base64, re, uuid
+import hmac, hashlib, requests, string, random, json, base64, re, uuid, time
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler
-import requests, urllib3
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
+import urllib3
+urllib3.disable_warnings()
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# ═══════════════════════════════════════════════════════════════
-#  CONSTANTS
-# ═══════════════════════════════════════════════════════════════
-HEX_KEY = "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3"
-API_KEY = bytes.fromhex(HEX_KEY)
-AES_KEY = bytes([89,103,38,116,99,37,68,69,117,104,54,37,90,99,94,56])
-AES_IV  = bytes([54,111,121,90,68,114,50,50,69,51,121,99,104,106,77,37])
+# ─────────── FIXED BD CONFIG ───────────
+REGION = "BD"
+LANG   = "bn"
+PREFIX = "Aʀɪʏᴀɴ"
 
 API_BASE   = "https://100067.connect.garena.com"
-MAJOR_BASE = "https://loginbp.ggpolarbear.com"
-CLIENT_BASE = "https://clientbp.ggpolarbear.com"
+MAJOR_BASE = "https://loginbp.ppmainecoonghj.com"
+API_HEX_KEY = "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3"
 
-RELEASE_VERSION = "OB55"
-UNITY_VERSION   = "2018.4.12f1"
-CLIENT_VERSION  = "1.132.6"
-CLIENT_VER_CODE = "2019121227"
+MAX_RETRY = 8
 
-BD_CARRIERS = ["Grameenphone", "Robi", "Banglalink", "Teletalk", "Airtel"]
-BD_IP_PREFIXES = ["103.230.", "103.108.", "103.148.", "103.87.",
-                  "119.30.", "119.148.", "202.134.", "202.4.",
-                  "103.4.", "103.84.", "103.99.", "27.147."]
-BD_DEVICES = [
-    "SM-A515F", "SM-A125F", "SM-M215F", "Redmi 9A",
-    "Redmi Note 10", "Realme C15", "Vivo Y20", "Oppo A15",
-    "Infinix Hot 10", "Walton Primo", "Symphony Z35", "Lava Z2",
+REG_HEADERS = {
+    "Connection": "Keep-Alive",
+    "Accept": "application/json",
+    "Accept-Encoding": "gzip",
+    "Content-Type": "application/json; charset=utf-8",
+    "Host": "100067.connect.garena.com",
+}
+
+MAJOR_HEADERS = {
+    "User-Agent": "UnityPlayer/2018.4.12f1 (UnityWebRequest/1.0, libcurl/8.5.0-DEV)",
+    "Accept-Encoding": "deflate, gzip",
+    "X-GA-SV": "1789535859",
+    "Authorization": "Bearer",
+    "X-GA": "v1 1",
+    "ReleaseVersion": "OB55",
+    "Content-Type": "application/x-www-form-urlencoded",
+    "X-Unity-Version": "2018.4.12f1",
+}
+
+COOKIES = [
+    "datadome=y23Z3X17pgkMHEt5zY8dqxC6BIf7WJMgC0RXNbqifHT7t9zajKe_hegFb1Ie9_7JixXpz7FRGVodOn~mWPk_NrqIIhUOXDYqKOahzoRQcyEy77GWEMcdA9_MqPJeM5qv",
+    "datadome=oYpIhVco_RFvLHe_T9KFd5wuY0gcQuNfrlt4rHJY5QOkwv4TGt8gPMK32MbHuBdzJyfXnXlfzNZT_2tHr2kys8AMYT2~T71QP1S78_7Pdx4JLOXdSrflPT6cOX2vsyJh",
+    "datadome=xJ8LmPnQvRtYbKc2dWfGhS4eZa9iUjM3oXpN6qT1vR7yL5kC8mB0nD4fH2gE6aJ",
 ]
-BD_ANDROID = ["9", "10", "11", "12"]
 
-# ═══════════════════════════════════════════════════════════════
-#  PROTO HELPERS
-# ═══════════════════════════════════════════════════════════════
-def enc_varint(n):
-    if n < 0: return b''
-    buf = []
-    while True:
-        b = n & 0x7F; n >>= 7
-        if n: b |= 0x80
-        buf.append(b)
-        if not n: break
-    return bytes(buf)
-
-def fvarint(tag, val):
-    return enc_varint((tag << 3) | 0) + enc_varint(val)
-
-def flength(tag, val):
-    tb = enc_varint((tag << 3) | 2)
-    d = val.encode('utf-8') if isinstance(val, str) else val
-    return tb + enc_varint(len(d)) + d
-
-def create_proto(fields):
-    out = bytearray()
-    for tag, val in fields.items():
-        if isinstance(val, int):
-            out.extend(fvarint(tag, val))
-        elif isinstance(val, (str, bytes)):
-            out.extend(flength(tag, val))
-    return bytes(out)
-
-def aes_encrypt(data):
-    return AES.new(AES_KEY, AES.MODE_CBC, AES_IV).encrypt(pad(data, AES.block_size))
-
-def decode_jwt(token):
-    try:
-        parts = token.split('.')
-        if len(parts) >= 2:
-            b = parts[1] + '=' * ((4 - len(parts[1]) % 4) % 4)
-            return json.loads(base64.urlsafe_b64decode(b).decode('utf-8', errors='ignore'))
-    except Exception:
-        pass
-    return {}
-
-def random_bd_ip():
-    p = random.choice(BD_IP_PREFIXES)
-    return p + f"{random.randint(1,254)}.{random.randint(1,254)}" if p.count('.') == 2 else p + f"{random.randint(1,254)}"
-
-# ═══════════════════════════════════════════════════════════════
-#  FIELD 14 (open_id XOR keystream)
-# ═══════════════════════════════════════════════════════════════
-KEYSTREAM = [
-    0x30,0x30,0x30,0x32,0x30,0x31,0x37,0x30,
-    0x30,0x30,0x30,0x30,0x32,0x30,0x31,0x37,
-    0x30,0x30,0x30,0x30,0x30,0x32,0x30,0x31,
-    0x37,0x30,0x30,0x30,0x30,0x30,0x32,0x30,
-]
-def build_field_14(open_id):
-    ob = open_id.encode('utf-8')
-    return bytes([ob[i] ^ KEYSTREAM[i % 32] for i in range(len(ob))])
-
-# ═══════════════════════════════════════════════════════════════
-#  FIELD_22 (OB55 mandatory)
-# ═══════════════════════════════════════════════════════════════
 FIELD_22 = bytes.fromhex(
     "4747524501010100620200001052aa0d669c6a368f08338060d2ee0690053af84a41edcd3558556ec10f24f4"
     "6c93ac64ca41a16732c46a2cb071246a79b8929032f9e1b6f4ef331bd53cabf29b09b97349a46e9863c0314e"
@@ -123,230 +61,199 @@ FIELD_22 = bytes.fromhex(
     "0e43"
 )
 
-# ═══════════════════════════════════════════════════════════════
-#  MAJOR LOGIN PROTO (dynamic, BD-aware)
-# ═══════════════════════════════════════════════════════════════
-def build_major_login_proto(open_id, access_token, region="BD"):
-    dev = random.choice(BD_DEVICES)
-    av = random.choice(BD_ANDROID)
-    carrier = random.choice(BD_CARRIERS)
-    ip = random_bd_ip()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    api_level = {"9":28, "10":29, "11":30, "12":31}.get(av, 28)
-    did = f"Google|{uuid.uuid4()}"
+KEYSTREAM = bytes([
+    0x30,0x30,0x30,0x32,0x30,0x31,0x37,0x30,0x30,0x30,0x30,0x30,0x32,0x30,0x31,0x37,
+    0x30,0x30,0x30,0x30,0x30,0x32,0x30,0x31,0x37,0x30,0x30,0x30,0x30,0x30,0x32,0x30
+])
 
-    fields = {
-        3: now, 4: "free fire", 5: 4,
-        7: CLIENT_VERSION, 8: CLIENT_VER_CODE,
-        9: f"Android OS {av} / API-{api_level}",
-        10: "Handheld", 11: dev,
-        12: 1280, 13: 720, 14: "240",
-        15: "ARMv7 VFPv3 NEON | 2400 | 4",
-        16: random.choice([5951, 6000, 6100]),
-        17: random.choice(["Adreno 610", "Mali-G72", "PowerVR GE8320"]),
-        18: "OpenGL ES 3.1 v1.46",
-        19: did, 20: ip, 21: "en",
-        22: open_id, 23: "4", 24: "Handheld",
-        25: dev, 26: region.upper(),
-        29: access_token, 30: 1,
-        41: carrier, 42: "WIFI",
-        92: random.choice([19788, 20000, 21000]),
-        93: "android_max",
-        97: 1, 98: 1, 99: "4", 100: "4",
-        104: 77149, 105: 1,
+def sign(payload):
+    return hmac.new(API_HEX_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+def aes_enc(plain_hex):
+    key = bytes([89,103,38,116,99,37,68,69,117,104,54,37,90,99,94,56])
+    iv  = bytes([54,111,121,90,68,114,50,50,69,51,121,99,104,106,77,37])
+    return AES.new(key, AES.MODE_CBC, iv).encrypt(pad(bytes.fromhex(plain_hex), AES.block_size)).hex()
+
+def varint(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F; n >>= 7
+        if n: b |= 0x80
+        out.append(b)
+        if not n: break
+    return bytes(out)
+
+def field(fn, v):
+    if isinstance(v, int):
+        return varint((fn << 3)) + varint(v)
+    ev = v.encode() if isinstance(v, str) else v
+    return varint((fn << 3) | 2) + varint(len(ev)) + ev
+
+def proto(d):
+    return b''.join(field(k, v) for k, v in d.items())
+
+def field14(open_id):
+    ob = open_id.encode()
+    return bytes([ob[i] ^ KEYSTREAM[i % 32] for i in range(len(ob))])
+
+SUPERSCRIPT_DIGITS = {'0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹'}
+
+def to_superscript(s):
+    return ''.join(SUPERSCRIPT_DIGITS.get(c, c) for c in s)
+
+def rand_name():
+    digits = ''.join(random.choice(string.digits) for _ in range(6))
+    return PREFIX + to_superscript(digits)
+
+def rand_pass():
+    return "ARIYAN_BD_" + ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(8))
+
+def rand_dev():
+    return {
+        "device": random.choice(["SM-S918B","SM-S908B","SM-S928B","OnePlus 11","Xiaomi 13 Pro","Pixel 7 Pro"]),
+        "carrier": random.choice(["Robi","Grameenphone","Banglalink","Airtel","Jio"]),
+        "android": random.choice(["11","12","13","14"]),
     }
-    return aes_encrypt(create_proto(fields))
 
-# ═══════════════════════════════════════════════════════════════
-#  NAME SANITIZER
-# ═══════════════════════════════════════════════════════════════
-DIRTY = {'admin','mod','freefire','ff','garena','bot','fuck','sex','porn',
-         'xxx','dick','ass','gay','bitch','kill','death','hate','terror',
-         'bomb','gun','drug','scam','hack','cheat','official','support'}
+def ua_of(d):
+    return f"GarenaMSDK/4.0.44({d['device']} ;Android {d['android']};{LANG};IND;app 2.127.1 2019118047;)"
 
-def sanitize_name(name):
-    if not name: name = "Ariyan"
-    c = ''.join(ch for ch in name if ch.isalnum())
-    low = c.lower()
-    for w in DIRTY:
-        if w in low:
-            c = re.sub(re.escape(w),
-                       ''.join(random.choice('0123456789') for _ in range(len(w))),
-                       c, flags=re.IGNORECASE)
-            low = c.lower()
-    c = re.sub(r'(.)\1{2,}', r'\1\1', c)
-    if c and not c[0].isalpha():
-        c = random.choice(string.ascii_letters) + c
-    if len(c) < 4:
-        c += ''.join(random.choice(string.digits) for _ in range(4 - len(c)))
-    return c[:12]
+def register_once():
+    s = requests.Session(); s.verify = False
+    password = rand_pass()
+    name = rand_name()
+    dev = rand_dev()
+    ua = ua_of(dev)
 
-def generate_name():
-    prefixes = ["Ariyan", "BD", "Dhaka", "Sylhet", "Rajshahi", "Khulna",
-                "Chatta", "Rangpur", "Barishal", "Mymensing"]
-    p = sanitize_name(random.choice(prefixes))
-    suf = ''.join(random.choice(string.digits) for _ in range(max(1, 12 - len(p))))
-    return (p + suf)[:12]
-
-# ═══════════════════════════════════════════════════════════════
-#  SINGLE ATTEMPT — BD ACCOUNT
-# ═══════════════════════════════════════════════════════════════
-def single_attempt():
     try:
-        session = requests.Session()
-        session.verify = False
-        session.headers.update({
-            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-A515F Build/RP1A.200720.012)",
-            "Connection": "Keep-Alive",
+        body = '{"app_id":100067,"client_type":2,"password":"%s","source":2}' % password
+        h = dict(REG_HEADERS); h["User-Agent"]=ua; h["Cookie"]=random.choice(COOKIES)
+        h["Authorization"] = f"Signature {sign(body)}"
+        
+        r = s.post(f"{API_BASE}/api/v2/oauth/guest:register", headers=h, data=body, timeout=15, verify=False)
+        if r.status_code == 429: return {"ok": False, "error": "429", "retry": True}
+        if r.status_code != 200: return {"ok": False, "error": f"Guest HTTP {r.status_code}"}
+
+        j = r.json()
+        if j.get("code") != 0: return {"ok": False, "error": f"Guest code {j.get('code')}", "retry": True}
+        uid = j["data"]["uid"]
+
+        hx = lambda n: ''.join(random.choice('0123456789abcdef') for _ in range(n))
+        devid = f"02-{hx(8)}-{hx(4)}-{hx(4)}-{hx(4)}-{hx(12)}"
+        body = ('{"client_id":100067,"client_secret":"%s","client_type":2,'
+                '"device_id":"%s","password":"%s","response_type":"token","uid":%s}'
+                ) % (API_HEX_KEY, devid, password, uid)
+        h["Authorization"] = f"Signature {sign(body)}"
+        h["Cookie"] = random.choice(COOKIES)
+        
+        r = s.post(f"{API_BASE}/api/v2/oauth/guest/token:grant", headers=h, data=body, timeout=15, verify=False)
+        if r.status_code == 429: return {"ok": False, "error": "429", "retry": True}
+        if r.status_code != 200: return {"ok": False, "error": f"Token HTTP {r.status_code}", "retry": True}
+
+        j = r.json()
+        if j.get("code") != 0: return {"ok": False, "error": f"Token code {j.get('code')}", "retry": True}
+        at = j["data"]["access_token"]
+        oid = j["data"]["open_id"]
+
+        p = proto({
+            1: name, 2: at, 3: oid, 5: 102000007, 6: 4, 7: 1, 13: 1,
+            14: field14(oid), 15: LANG, 16: 1, 22: FIELD_22,
         })
+        mh = dict(MAJOR_HEADERS); mh["Host"]="loginbp.ppmainecoonghj.com"
+        mh["User-Agent"]=ua; mh["Content-Type"]="application/octet-stream"
+        mh["Authorization"]=f"Bearer {at}"
+        
+        r = s.post(f"{MAJOR_BASE}/MajorRegister", headers=mh, data=bytes.fromhex(aes_enc(p.hex())), timeout=15, verify=False)
+        if r.status_code == 429: return {"ok": False, "error": "429", "retry": True}
+        if r.status_code != 200: return {"ok": False, "error": f"Register HTTP {r.status_code}", "retry": True}
 
-        username = generate_name()
-        password = "ariyan_" + ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        av = dev['android']; api = 30 + int(av) - 11
+        lp = proto({
+            3: ts, 4: "free fire", 5: 4, 7: "1.132.1", 8: "2019116753",
+            9: f"Android OS {av} / API-{api} (SP1A.210812.016.C2)",
+            10: "Handheld", 11: dev['device'], 12: 1280, 13: 720, 14: "240",
+            15: "x86-64 SSE3 SSE4.1 SSE4.2 AVX AVX2 | 2400 | 4",
+            16: random.choice([5951,6000,6100,5500,6500]),
+            17: "Adreno 740", 18: "OpenGL ES 3.1 v1.46",
+            19: f"Google|{uuid.uuid4()}",
+            20: f"{random.randint(1,223)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}",
+            21: LANG, 22: oid, 23: "4", 24: "Handheld", 25: dev['device'],
+            26: "IND", 29: at, 30: 1, 41: dev['carrier'], 42: "WIFI",
+            92: random.choice([19788,20000,21000]),
+            93: "android_max", 97: 1, 98: 1, 99: "4", 100: "4", 104: 77149, 105: 1,
+        })
+        
+        r = s.post(f"{MAJOR_BASE}/MajorLogin", headers=mh, data=bytes.fromhex(aes_enc(lp.hex())), timeout=15, verify=False)
+        if r.status_code == 429: return {"ok": False, "error": "429", "retry": True}
+        if r.status_code != 200: return {"ok": False, "error": f"Login HTTP {r.status_code}", "retry": True}
 
-        # 1) Guest register
+        m = re.search(rb"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+", r.content)
+        if not m: return {"ok": False, "error": "JWT missing", "retry": True}
+        token = m.group(0).decode()
+
+        acc = "N/A"; lvl = 1; nick = name
         try:
-            pr = json.dumps({"app_id": 100067, "client_type": 2,
-                             "password": password, "source": 2}, separators=(',', ':'))
-            sig = hmac.new(API_KEY, pr.encode(), hashlib.sha256).hexdigest()
-            r = session.post(f"{API_BASE}/api/v2/oauth/guest:register",
-                             headers={"Authorization": f"Signature {sig}",
-                                      "Content-Type": "application/json; charset=utf-8"},
-                             data=pr, timeout=10, verify=False)
-            if r.status_code != 200: return None
-            j = r.json()
-            if j.get("code") != 0: return None
-            uid = j["data"]["uid"]
-        except Exception:
-            return None
-
-        # 2) Token grant
-        try:
-            pt = json.dumps({
-                "client_id": 100067, "client_secret": HEX_KEY,
-                "client_type": 2, "password": password,
-                "response_type": "token", "uid": str(uid),
-            }, separators=(',', ':'))
-            sig = hmac.new(API_KEY, pt.encode(), hashlib.sha256).hexdigest()
-            r = session.post(f"{API_BASE}/api/v2/oauth/guest/token:grant",
-                             headers={"Authorization": f"Signature {sig}",
-                                      "Content-Type": "application/json; charset=utf-8"},
-                             data=pt, timeout=10, verify=False)
-            if r.status_code != 200: return None
-            j = r.json()
-            if j.get("code") != 0: return None
-            access_token = j["data"]["access_token"]
-            open_id = j["data"]["open_id"]
-        except Exception:
-            return None
-
-        # 3) MajorRegister
-        reg_fields = {
-            1: username, 2: access_token, 3: open_id,
-            5: 102000007, 6: 4, 7: 1, 13: 1,
-            14: build_field_14(open_id),
-            15: "en", 16: 1,
-            22: FIELD_22,
-        }
-        headers_mr = {
-            "User-Agent": "UnityPlayer/2018.4.12f1 (UnityWebRequest/1.0, libcurl/8.5.0-DEV)",
-            "Accept-Encoding": "deflate, gzip",
-            "X-GA-SV": "1789535859",
-            "Authorization": f"Bearer {access_token}",
-            "X-GA": "v1 1",
-            "ReleaseVersion": RELEASE_VERSION,
-            "Content-Type": "application/octet-stream",
-            "X-Unity-Version": UNITY_VERSION,
-            "Host": "loginbp.ggpolarbear.com",
-        }
-        try:
-            session.post(f"{MAJOR_BASE}/MajorRegister",
-                         headers=headers_mr, data=aes_encrypt(create_proto(reg_fields)),
-                         timeout=15, verify=False)
-        except Exception:
-            pass
-
-        # 4) MajorLogin
-        jwt = ""
-        acc_id = "N/A"
-        try:
-            enc_login = build_major_login_proto(open_id, access_token, region="BD")
-            headers_ml = dict(headers_mr)
-            r = session.post(f"{MAJOR_BASE}/MajorLogin",
-                             headers=headers_ml, data=enc_login,
-                             timeout=15, verify=False)
-            if r.status_code == 200:
-                m = re.search(rb"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+", r.content)
-                if m:
-                    jwt = m.group(0).decode('utf-8', errors='ignore')
-                    jd = decode_jwt(jwt)
-                    acc_id = str(jd.get("account_id") or jd.get("external_id", "N/A"))
-        except Exception:
-            pass
-
-        # 5) ChooseRegion BD + Beginner Guide
-        if jwt:
-            try:
-                hb = {
-                    "User-Agent": "Dalvik/2.1.0 (Linux; Android 12)",
-                    "Authorization": f"Bearer {jwt}",
-                    "ReleaseVersion": RELEASE_VERSION,
-                    "Content-Type": "application/octet-stream",
-                }
-                session.post(f"{MAJOR_BASE}/ChooseRegion",
-                             data=aes_encrypt(create_proto({1: "BD"})),
-                             headers=hb, timeout=10, verify=False)
-                session.post(f"{CLIENT_BASE}/ActiveBeginnerGuide",
-                             data=aes_encrypt(create_proto({1: 3})),
-                             headers=hb, timeout=10, verify=False)
-            except Exception:
-                pass
+            pb = token.split('.')[1]; pad_ = '=' * (-len(pb) % 4)
+            dj = json.loads(base64.urlsafe_b64decode(pb + pad_))
+            acc = dj.get('account_id') or dj.get('external_id') or dj.get('uid') or "N/A"
+            lvl = dj.get('level') or dj.get('lv') or 1
+            nick = dj.get('nickname') or dj.get('name') or name
+        except: pass
 
         return {
-            "status": "success",
-            "region": "BD",
-            "name": username,
-            "uid": str(uid),
-            "password": password,
-            "account_id": acc_id,
-            "token": jwt if jwt else access_token,
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ok": True, "name": name, "nickname": str(nick), "uid": str(uid),
+            "password": password, "account_id": str(acc), "level": int(lvl) if str(lvl).isdigit() else lvl,
+            "region": "BD", "lang": LANG, "open_id": oid, "token": token,
+            "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
-    except Exception:
-        return None
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:100]}", "retry": True}
+    finally:
+        try: s.close()
+        except: pass
 
-# ═══════════════════════════════════════════════════════════════
-#  RUN 10 PARALLEL ATTEMPTS
-# ═══════════════════════════════════════════════════════════════
-def run_generator():
-    with ThreadPoolExecutor(max_workers=10) as ex:
-        futures = [ex.submit(single_attempt) for _ in range(10)]
-        for f in as_completed(futures):
-            try:
-                r = f.result()
-                if r and r.get("uid") and r.get("token"):
-                    return r
-            except Exception:
-                pass
-    return {"status": "error", "message": "Busy, please retry."}
+def register():
+    last_err = "unknown"
+    for attempt in range(1, MAX_RETRY + 1):
+        r = register_once()
+        if r.get("ok"):
+            r["attempts"] = attempt
+            return r
+        last_err = r.get("error", "unknown")
+        if "429" in last_err: time.sleep(1.5)
+        else: time.sleep(0.5)
+    return {"ok": False, "error": f"{MAX_RETRY} বার চেষ্টার পরও ব্যর্থ ({last_err})"}
 
-# ═══════════════════════════════════════════════════════════════
-#  VERCEL HANDLER
-# ═══════════════════════════════════════════════════════════════
+# Vercel Serverless Native Handler
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        try:
-            result = run_generator()
-            body = json.dumps(result).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            err = json.dumps({"status": "error", "message": str(e)}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(err)
+        result = register()
+        if result.get("ok"):
+            payload = {
+                "status": "SUCCESS", "attempts": result.get("attempts", 1),
+                "name": result.get("name"), "nickname": result.get("nickname"),
+                "uid": result.get("uid"), "password": result.get("password"),
+                "account_id": result.get("account_id"), "level": result.get("level"),
+                "region": result.get("region"), "lang": result.get("lang"),
+                "open_id": result.get("open_id"), "token": result.get("token"),
+                "time": result.get("time"),
+            }
+            http_code = 200
+        else:
+            payload = {
+                "status": "FAILED", "error": result.get("error", "unknown"),
+                "attempts": MAX_RETRY, "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            }
+            http_code = 500
+
+        data = json.dumps(payload, indent=4, ensure_ascii=False).encode('utf-8')
+        self.send_response(http_code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *a):
+        pass
